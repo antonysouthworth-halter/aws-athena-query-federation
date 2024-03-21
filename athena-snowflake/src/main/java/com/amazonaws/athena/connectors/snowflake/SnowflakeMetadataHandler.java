@@ -103,6 +103,8 @@ public class SnowflakeMetadataHandler extends JdbcMetadataHandler
             "WHERE  table_type = 'BASE TABLE'\n" +
             "AND table_schema= ?\n" +
             "AND TABLE_NAME = ? ";
+    static final String SHOW_PRIMARY_KEYS_QUERY = "SHOW PRIMARY KEYS IN ";
+    static final String PRIMARY_KEY_COLUMN_NAME = "column_name";
     private static final String CASE_UPPER = "upper";
     private static final String CASE_LOWER = "lower";
     /**
@@ -177,6 +179,20 @@ public class SnowflakeMetadataHandler extends JdbcMetadataHandler
                 .addField(BLOCK_PARTITION_COLUMN_NAME, Types.MinorType.VARCHAR.getType());
         return schemaBuilder.build();
     }
+
+    private String getPrimaryKey(TableName tableName) throws Exception 
+    {
+        Connection connection = getJdbcConnectionFactory().getConnection(getCredentialProvider());
+        PreparedStatement preparedStatement = connection.prepareStatement(SHOW_PRIMARY_KEYS_QUERY + tableName.getTableName());
+        try (ResultSet rs = preparedStatement.executeQuery()) {
+            while (rs.next()) {
+                // get first primary key
+                return rs.getString(PRIMARY_KEY_COLUMN_NAME);
+            }
+        }
+        return "";
+    }
+
     /**
      * Snowflake manual partition logic based upon number of records
      * @param blockWriter
@@ -216,8 +232,10 @@ public class SnowflakeMetadataHandler extends JdbcMetadataHandler
                     totalRecordCount = rs.getLong(1);
                 }
                 if (totalRecordCount > 0) {
+                    String primaryKey = getPrimaryKey(getTableLayoutRequest.getTableName());
+                    LOGGER.info("PRIMARY KEY IS {}", primaryKey);
                     long pageCount = (long) (Math.ceil(totalRecordCount / MAX_PARTITION_COUNT));
-                    long partitionRecordCount = (totalRecordCount <= SINGLE_SPLIT_LIMIT_COUNT) ? (long) totalRecordCount : pageCount;
+                    long partitionRecordCount = (totalRecordCount <= SINGLE_SPLIT_LIMIT_COUNT || primaryKey.equals("")) ? (long) totalRecordCount : pageCount;
                     LOGGER.info(" Total Page  Count" +  partitionRecordCount);
                     double limit = (int) Math.ceil(totalRecordCount / partitionRecordCount);
                     long offset = 0;
@@ -227,7 +245,7 @@ public class SnowflakeMetadataHandler extends JdbcMetadataHandler
                      * the partition values we are setting the limit and offset values like p-limit-3000-offset-0
                      */
                     for (int i = 1; i <= limit; i++) {
-                        final String partitionVal = BLOCK_PARTITION_COLUMN_NAME + "-limit-" + partitionRecordCount + "-offset-" + offset;
+                        final String partitionVal = BLOCK_PARTITION_COLUMN_NAME + "-primary-" + primaryKey + "-limit-" + partitionRecordCount + "-offset-" + offset;
                         LOGGER.info("partitionVal {} ", partitionVal);
                         blockWriter.writeRows((Block block, int rowNum) ->
                         {
